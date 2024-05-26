@@ -1,0 +1,151 @@
+----Impact of station 
+
+select start_station_name , avg(duration_minutes) as duration
+FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+group by start_station_name
+
+----Impact of day of week and hour of day
+
+select extract(dayofweek from start_time) as day_of_week ,
+      avg(duration_minutes) as duration
+FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+group by day_of_week
+
+
+select extract(hour from start_time) as hour_of_day ,
+      avg(duration_minutes) as duration
+FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+group by hour_of_day
+
+--------Create a training dataset
+
+select start_station_name ,
+  cast(extract(dayofweek from start_time) as string) as day_of_week,
+  cast(extract(hour from start_time) as string) as hour_of_day,
+  duration_minutes as duration,
+from  `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+
+--------Training data with linear regression
+
+CREATE OR REPLACE MODEL
+  bike_model.model
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+select start_station_name ,
+  cast(extract(dayofweek from start_time) as string) as day_of_week,
+  cast(extract(hour from start_time) as string) as hour_of_day,
+  duration_minutes as duration,
+from  `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+where duration_minutes is not null
+
+------Performance of Training data on model
+
+SELECT * FROM ML.EVALUATE(MODEL `bike_model.model`)
+
+-------Improving the model through feature engineering
+
+CREATE OR REPLACE MODEL
+  bike_model.model_weekday
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+SELECT
+  (duration_minutes) as duration ,
+  start_station_name,
+IF
+  (EXTRACT(dayofweek
+    FROM
+      start_time) BETWEEN 2 AND 6,
+    'weekday',
+    'weekend') AS day_of_week,
+  CAST(EXTRACT(hour
+    FROM
+      start_time) AS STRING) AS hour_of_day
+FROM  `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+where duration_minutes is not null
+
+--------evaluating the model 
+SELECT * FROM ML.EVALUATE(MODEL `bike_model.model_weekday`)
+
+-----------Bucketising hour of day
+
+CREATE OR REPLACE MODEL
+  bike_model.model_bucketized
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+SELECT
+  (duration_minutes) as duration ,
+  start_station_name,
+IF
+  (EXTRACT(dayofweek
+    FROM
+      start_time) BETWEEN 2 AND 6,
+    'weekday',
+    'weekend') AS day_of_week,
+  ML.BUCKETIZE(EXTRACT(hour
+    FROM
+      start_time),
+    [5, 10, 17]) AS hour_of_day
+FROM  `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+where duration_minutes is not null
+
+--------performance of model
+SELECT * FROM ML.EVALUATE(MODEL `bike_model.model_bucketized`)
+
+-------------Make predictions
+
+CREATE OR REPLACE MODEL
+  bike_model.model_bucketized TRANSFORM(* EXCEPT(start_time),
+  IF
+    (EXTRACT(dayofweek
+      FROM
+        start_time) BETWEEN 2 AND 6,
+      'weekday',
+      'weekend') AS day_of_week,
+    ML.BUCKETIZE(EXTRACT(HOUR
+      FROM
+        start_time),
+      [5, 10, 17]) AS hour_of_day )
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+SELECT
+  (duration_minutes) as duration,
+  start_station_name,
+  start_time
+FROM
+   `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+  WHERE duration_minutes IS NOT NULL
+  
+  -------prediction
+SELECT
+  *
+FROM
+  ML.PREDICT(MODEL bike_model.model_bucketized,
+    (
+    SELECT
+      'South Congress/Mary' AS start_station_name,
+      CURRENT_TIMESTAMP() AS start_time) )
+
+----------predicting the duration for 100 sample 
+SELECT
+  *
+FROM
+  ML.PREDICT(MODEL bike_model.model_bucketized,
+    (
+    SELECT
+      start_station_name,
+      start_time
+    FROM
+      `bigquery-public-data.austin_bikeshare.bikeshare_trips`
+    LIMIT
+      100) )
+
+-----------examining the model weights
+
+SELECT * FROM ML.WEIGHTS(MODEL bike_model.model_bucketized)
+
+
+
